@@ -20,6 +20,7 @@ Optional arguments:
 
 import argparse
 import concurrent.futures
+import json
 import os
 import time
 from typing import Optional, Dict
@@ -28,6 +29,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 import pandas as pd
+from persist_policies import persist_policies
 from together import Together
 from prompts import prompt_without_correlation
 
@@ -42,7 +44,7 @@ class ModelRateLimiter:
     
     # Default rate limits (requests per second) for each model
     DEFAULT_RATE_LIMITS = {
-        ModelType.DEEPSEEK: 0.3,
+        ModelType.DEEPSEEK: 0.1,  # 6 requests per minute
         ModelType.LLAMA: 0.5
     }
     
@@ -112,8 +114,37 @@ def extract_features_and_correlations(text: str, model: str = ModelType.DEEPSEEK
     """
     # Generate the prompt using the template
     prompt = prompt_without_correlation(text)
+    
+    # Define the JSON schema for the response
+    json_schema = {
+        "type": "object",
+        "properties": {
+            "GEOGRAPHIC": {"type": "string"},
+            "items": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                        "FACTOR": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "object",
+                                "properties": {
+                                    "CORRELATION": {"type": "string"}
+                                },
+                                "required": ["CORRELATION"]
+                            }
+                        }
+                    },
+                    "required": ["FACTOR"]
+                }
+            }
+        },
+        "required": ["GEOGRAPHIC", "items"]
+    }
+    
   
-    retry_attempts = 5
+    retry_attempts = 2
     retry_delay = 2  # seconds
 
     for attempt in range(retry_attempts):
@@ -126,13 +157,25 @@ def extract_features_and_correlations(text: str, model: str = ModelType.DEEPSEEK
                 model=model,
                 messages=[
                     {"role": "user", "content": prompt}
-                ]
+                ],
+                response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "schema": json_schema,
+                    "name": "output_schema",
+                    "strict": True
+                }
+            }
             )
-            extracted_data = response.choices[0].message.content.strip()
+            extracted_data = json.loads(response.choices[0].message.content.strip())
+            print(f"Extracted data: {extracted_data}")
+            persisted_data = persist_policies(extracted_data, text)
+            extracted_data.update({"abstract": text})
             print(f"Extracted data: {extracted_data}")  
             return extracted_data
         except Exception as e:
             if attempt < retry_attempts - 1:
+                print(f"Exception: {e}")
                 print(f"Error occurred. Retrying in {retry_delay} seconds...")
                 time.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff

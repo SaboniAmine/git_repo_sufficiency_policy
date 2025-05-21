@@ -25,7 +25,7 @@ from multiprocessing import Pool, cpu_count
 import pandas as pd
 from openai import OpenAI
 from persist_policies import persist_policies
-from prompts import generate_abstract_analysis_prompt
+from prompts import generate_abstract_analysis_prompt, prompt_without_correlation
 
 
 def init_client():
