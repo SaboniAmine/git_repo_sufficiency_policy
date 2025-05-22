@@ -139,6 +139,19 @@ def prompt_without_correlation(text: str) -> str:
     - **FACTOR** cannot include negative formulations like "decrease", "reduction", "lowering", "savings", or "loss of". If the **FACTOR** is presented negatively in the abstract, it should be rephrased positively (e.g., "CO2 emission reduction" should be framed as "CO2 emissions", the reduction part would be included in the **CORRELATION**). 
     - **FACTOR** can also be an **ITEM** in the context of other **ITEMs**. In other words, an **ITEM** can act as a **FACTOR** for another **ITEM** if it influences or affects it. For example, **public transport** (an **ITEM**) can affect **CO2 emissions** (a **FACTOR**), but **CO2 emissions** can also be impacted by another **ITEM** like **carpooling**. Therefore, when extracting **ITEMs** and **FACTORS**, be aware that **ITEMs** can also act as **FACTORS** for other **ITEMs**. 
 
+
+    4. **SECTOR**: The **SECTOR** refers to a category from the following, each category with its definition after the => :
+    - (A) Agriculture, Forestry, fishing (production, consumption and trade) => Crop and animal production, hunting and related service activities; Forestry, logging Fishing and support services to forestry; Marine and freshwater fishing and aquaculture
+    - (B) Land-use and urbanisation =>	Construction (new, renovation, demolition, adaptation and re-use), Real Estate Activities, Nature protection and restoration, Services to buildings and landscape activities
+    - (C) Trade => Mining of coal, lignite, metal ores, non-ferrous metal ores and chemical/fertiliser minerals; Extraction of crude petroleum and natural gas; Quarrying of stone, sand and clay; Mining support service activities, Food products; Beverages; Textiles and wearing apparel; Leather and related products; Wood and of products of wood and cork; Paper and paper products; Chemicals and chemical products; Coke and refined petroleum products; Printing and reproduction of recorded media; Pharmaceutical products and pharmaceutical preparations; Rubber and plastic products; Metals, and non-ferrous metals; Non-metallic mineral products (glas, building materials, concrete, cement and plaster); Computer, electronic and optical products; Machinery, and electrical equipment; Vehicles, motor vehicles, trailers, semi-trailers and other transport equipment; Other manufacturing (Jewellery, bijouterie, musical instruments, toys, games, medical and dental instruments…), Power generation, transmission and distribution; Manufacture of gas; distribution of gaseous fuels through mains
+    - (D) Transportation => Passenger transport (rail, land, water, air); Freight transport (rail, road, water, air)
+    - (E) Information and communication => Publishing of books, periodicals and other publishing activities; Motion picture, video and television programme production, sound recording and music publishing activities; Programming and broadcasting activities; Information service activities
+    - (F) Waste management => Waste collection; Waste treatment and disposal; Materials recovery; Remediation activities and other waste management services
+    - (G) Tourism, Arts, entertainment and recreation => Accommodation; Food and beverage service activities; Travel agencies and tour operators related activities; Libraries, archives, museums and other cultural activities; Creative, arts and entertainment activities; Sports activities, amusement and recreation activities; Gambling and betting activities
+    - (H) Financial activities => Banking, financial leasing and financial service activities
+    - (I) Scientific activities and technical activities => Legal and accounting activities; Research and scientific activities; Advertising and market research activities; Architectural and engineering activities; technical testing and analysis; Other professional, scientific and technical activities
+    - (J) Social affairs => Education and sport activities; Human health, health system and health care services; Social work activities; Labor and employment activities; Insurance, reinsurance and pension funding; Security and investigation activities; Other personal service activities (cleaning clothes, hairdressing…)
+    - (K) Public administration, administration and support service activities => General public administration activities; Foreign affairs; Defence activities; Justice activities; Public order and safety activities
     --- 
 
     Now, analyze the following abstract and: 
@@ -146,9 +159,40 @@ def prompt_without_correlation(text: str) -> str:
     2. Extract all the **ITEMs** mentioned. If **no ITEMs** are found in the abstract, return **None** and stop the prompt. 
     3. For each extracted **ITEM**, determine whether it has a **increasing**, **decreasing**, or **neutral** effect on one or more **FACTORS**. Extract the impacted **FACTORS** (write "None" if no factors are impacted). 
     4. For each **ITEM** and its associated **FACTOR** and summarize the correlation between the **ITEM** and the **FACTOR** in a single simple sentence named **CORRELATION**.
+    5. Identify the **SECTOR** or multiple **SECTORS** of the study (if mentioned in the abstract). If not, label it as "None".
 
     **Do not make any assumptions or infer data for items that are not mentioned in the abstract.** 
     **Do not use acronyms if the developed formulation is in the abstract.**
+
+    EXAMPLE JSON OUTPUT: 
+
+    {{ 
+        "transit infrastructure investment": {{ 
+            "FACTOR": {{ 
+                "social exclusion": {{ 
+                    "CORRELATION": "decreasing", 
+                }}, 
+                "CO2 emissions": {{ 
+                    "CORRELATION": "decreasing", 
+                }} 
+            }}, 
+            "SECTOR": ["D"],
+            "GEOGRAPHIC": "new towns",
+        }}, 
+        "microcars": {{ 
+            "FACTOR": {{ 
+                "materials use": {{ 
+                    "CORRELATION": "decreasing", 
+                }}, 
+                "food accessibility": {{ 
+                    "CORRELATION": "increasing", 
+                }},
+            "SECTOR": ["D"],
+            "GEOGRAPHIC": "new towns",
+            }} 
+        }}, 
+        ... 
+    }} 
 
     Abstract: {text} 
     """ 

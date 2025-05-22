@@ -19,13 +19,12 @@ import os
 import json
 import time
 from typing import Optional, List, Dict, Tuple
-from datetime import datetime
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool
 
 import pandas as pd
 from openai import OpenAI
-from persist_policies import persist_policies
-from prompts import generate_abstract_analysis_prompt, prompt_without_correlation
+# from persist_policies import persist_policies
+from prompts import prompt_without_correlation
 
 
 def init_client():
@@ -38,7 +37,7 @@ def init_client():
     )
 
 
-def extract_features_and_correlations(text: str) -> Tuple[Optional[str], Dict]:
+def extract_features_and_correlations(abstract: str, openalex_id: str, doi: str) -> Tuple[Optional[str], Dict]:
     """
     Extract features and correlations from an abstract using Scaleway's OpenAI API.
     
@@ -48,17 +47,16 @@ def extract_features_and_correlations(text: str) -> Tuple[Optional[str], Dict]:
     Returns:
         Tuple of (extracted data or None if processing failed, metrics dictionary)
     """
-    if not text.strip():
+    if not abstract.strip():
         return None, {"tokens": 0, "time": 0}
 
     # Generate the prompt using the template
-    prompt = generate_abstract_analysis_prompt(text)
-    
+    prompt = prompt_without_correlation(abstract)
+
     # Define the JSON schema for the response
     json_schema = {
         "type": "object",
         "properties": {
-            "GEOGRAPHIC": {"type": "string"},
             "items": {
                 "type": "object",
                 "additionalProperties": {
@@ -72,19 +70,26 @@ def extract_features_and_correlations(text: str) -> Tuple[Optional[str], Dict]:
                                     "CORRELATION": {"type": "string"}
                                 },
                                 "required": ["CORRELATION"]
+                            },
+                        },
+                        "SECTOR": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
                             }
-                        }
+                        },
+                        "GEOGRAPHIC": {"type": "string"},
                     },
-                    "required": ["FACTOR"]
+                    "required": ["FACTOR, GEOGRAPHIC", "SECTOR"]
                 }
             }
         },
-        "required": ["GEOGRAPHIC", "items"]
+        "required": ["items"]
     }
-    
+
     start_time = time.time()
     try:
-        print(f"Processing abstract: {text}...")
+        print(f"Processing abstract: {abstract}...")
         response = client.chat.completions.create(
             model="deepseek-r1-distill-llama-70b",
             messages=[
@@ -99,16 +104,16 @@ def extract_features_and_correlations(text: str) -> Tuple[Optional[str], Dict]:
                 }
             }
         )
-        
+
         # Calculate metrics
         end_time = time.time()
         processing_time = end_time - start_time
-        
+
         # Get token usage
         prompt_tokens = response.usage.prompt_tokens
         completion_tokens = response.usage.completion_tokens
         total_tokens = response.usage.total_tokens
-        
+
         metrics = {
             "tokens": {
                 "prompt": prompt_tokens,
@@ -117,14 +122,16 @@ def extract_features_and_correlations(text: str) -> Tuple[Optional[str], Dict]:
             },
             "time": processing_time
         }
-        
+
         extracted_data = json.loads(response.choices[0].message.content.strip())
-        persisted_data = persist_policies(extracted_data, text)
-        extracted_data.update({"abstract": text})
+        # persisted_data = persist_policies(extracted_data, text)
+        extracted_data.update({"abstract": abstract})
+        extracted_data.update({"openalex_id": openalex_id})
+        extracted_data.update({"doi": doi})
         print(f"Extracted data: {extracted_data}")
         print(f"Metrics: {metrics}")
         return extracted_data, metrics
-        
+
     except Exception as e:
         end_time = time.time()
         processing_time = end_time - start_time
@@ -132,18 +139,33 @@ def extract_features_and_correlations(text: str) -> Tuple[Optional[str], Dict]:
         return None, {"tokens": 0, "time": processing_time}
 
 
-def process_abstracts(abstracts: List[str]) -> List[Tuple[Optional[str], Dict]]:
+def process_row(args):
+    """Process a single row of data with the given arguments."""
+    abstract, openalex_id, doi = args
+    return extract_features_and_correlations(abstract, openalex_id, doi)
+
+
+def process_in_batches(df: pd.DataFrame, batch_size: int = 1) -> list:
     """
-    Process a list of abstracts using multiprocessing.
-    
+    Process abstracts in batches using parallel processing.
+
     Args:
-        abstracts: List of abstract texts to process
-        
+        df: DataFrame containing abstracts
+        batch_size: Number of abstracts to process in parallel
+
     Returns:
-        List of tuples containing (extracted data, metrics)
+        List of extracted features for each abstract
     """
-    with Pool(processes=4, initializer=init_client) as pool:
-        results = pool.map(extract_features_and_correlations, abstracts)
+    results = []
+    for i in range(0, len(df), batch_size):
+        batch = df.iloc[i:i + batch_size]
+        with Pool(processes=4, initializer=init_client) as pool:
+            # Zip the arguments together and pass as a single iterable
+            batch_results = list(pool.map(
+                process_row,
+                zip(batch['abstract'], batch['openalex_id'], batch['doi'])
+            ))
+        results.extend(batch_results)
     return results
 
 
@@ -151,43 +173,43 @@ def main():
     parser = argparse.ArgumentParser(description='Process abstracts to extract features and correlations.')
     parser.add_argument('--input', required=True, help='Path to input Parquet file containing abstracts')
     parser.add_argument('--output', required=True, help='Path to save the JSON file with extracted features')
-    
+
     args = parser.parse_args()
-    
+
     # Read input data
     print(f"Reading input data from {args.input}")
     df = pd.read_parquet(args.input)
     df["abstract"] = df["abstract"].fillna("").astype(str)
-    
+
     # Start timing the entire process
     total_start_time = time.time()
-    
+
     # Process abstracts using multiprocessing
     print(f"Processing {len(df)} abstracts using 4 workers")
-    results_with_metrics = process_abstracts(df['abstract'].tolist())
-    
+    results_with_metrics = process_in_batches(df)
+
     # Calculate total processing time
     total_time = time.time() - total_start_time
-    
+
     # Separate results and metrics
     results = []
     metrics_list = []
     total_tokens = 0
-    
+
     for result, metrics in results_with_metrics:
         if result is not None:
             results.append(result)
             metrics_list.append(metrics)
             total_tokens += metrics["tokens"]["total"]
-    
+
     # Calculate and print summary statistics
     print("\nSummary Statistics:")
     print(f"Total abstracts processed: {len(results)}")
     print(f"Total tokens used: {total_tokens}")
     print(f"Total processing time: {total_time:.2f} seconds")
-    print(f"Average tokens per request: {total_tokens/len(results) if results else 0:.2f}")
-    print(f"Average time per request: {total_time/len(results) if results else 0:.2f} seconds")
-    
+    print(f"Average tokens per request: {total_tokens / len(results) if results else 0:.2f}")
+    print(f"Average time per request: {total_time / len(results) if results else 0:.2f} seconds")
+
     # Save results
     print(f"\nSaving results to {args.output}")
     with open(args.output, 'w') as f:
@@ -196,4 +218,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
