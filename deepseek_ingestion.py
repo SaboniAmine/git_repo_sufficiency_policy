@@ -30,20 +30,20 @@ from prompts import prompt_without_correlation
 def init_client():
     """Initialize the OpenAI client for each worker process."""
     global client
-    scaleway_api_key = os.getenv('SCW_SECRET_KEY', "") # Amine
+    deepseek_api_key = os.getenv('DS_SECRET_KEY', "")  # DS key
     client = OpenAI(
-        base_url="https://api.scaleway.ai/v1",
-        api_key=scaleway_api_key
+        base_url="https://api.deepseek.com",
+        api_key=deepseek_api_key
     )
 
 
 def extract_features_and_correlations(abstract: str, openalex_id: str, doi: str) -> Tuple[Optional[str], Dict]:
     """
     Extract features and correlations from an abstract using Scaleway's OpenAI API.
-    
+
     Args:
         text: The abstract text to analyze
-        
+
     Returns:
         Tuple of (extracted data or None if processing failed, metrics dictionary)
     """
@@ -91,18 +91,12 @@ def extract_features_and_correlations(abstract: str, openalex_id: str, doi: str)
     try:
         print(f"Processing abstract: {abstract}...")
         response = client.chat.completions.create(
-            model="deepseek-r1-distill-llama-70b",
+            model="deepseek-chat",
             messages=[
                 {"role": "user", "content": prompt}
             ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "schema": json_schema,
-                    "name": "output_schema",
-                    "strict": True
-                }
-            }
+            response_format={'type': 'json_object'},
+            stream=False
         )
 
         # Calculate metrics
@@ -145,26 +139,18 @@ def process_row(args):
     return extract_features_and_correlations(abstract, openalex_id, doi)
 
 
-def process_in_batches(df: pd.DataFrame, output_file: str, batch_size: int = 1) -> list:
+def process_in_batches(df: pd.DataFrame, batch_size: int = 1) -> list:
     """
-    Process abstracts in batches using parallel processing and append results to output file.
+    Process abstracts in batches using parallel processing.
 
     Args:
         df: DataFrame containing abstracts
-        output_file: Path to the output JSON file
         batch_size: Number of abstracts to process in parallel
 
     Returns:
-        List of metrics for each batch
+        List of extracted features for each abstract
     """
-    metrics_list = []
-    total_tokens = 0
-    
-    # Initialize output file with empty list if it doesn't exist
-    if not os.path.exists(output_file):
-        with open(output_file, 'w') as f:
-            json.dump([], f)
-    
+    results = []
     for i in range(0, len(df), batch_size):
         batch = df.iloc[i:i + batch_size]
         with Pool(processes=4, initializer=init_client) as pool:
@@ -173,31 +159,8 @@ def process_in_batches(df: pd.DataFrame, output_file: str, batch_size: int = 1) 
                 process_row,
                 zip(batch['abstract'], batch['openalex_id'], batch['doi'])
             ))
-        
-        # Process batch results
-        batch_data = []
-        for result, metrics in batch_results:
-            if result is not None:
-                batch_data.append(result)
-                metrics_list.append(metrics)
-                total_tokens += metrics["tokens"]["total"]
-        
-        # Append batch results to output file
-        if batch_data:
-            with open(output_file, 'r+') as f:
-                try:
-                    existing_data = json.load(f)
-                except json.JSONDecodeError:
-                    existing_data = []
-                
-                existing_data.extend(batch_data)
-                f.seek(0)
-                json.dump(existing_data, f, indent=2)
-                f.truncate()
-        
-        print(f"Processed batch {i//batch_size + 1}/{(len(df) + batch_size - 1)//batch_size}")
-    
-    return metrics_list, total_tokens
+        results.extend(batch_results)
+    return results
 
 
 def main():
@@ -217,18 +180,34 @@ def main():
 
     # Process abstracts using multiprocessing
     print(f"Processing {len(df)} abstracts using 4 workers")
-    metrics_list, total_tokens = process_in_batches(df, args.output)
+    results_with_metrics = process_in_batches(df)
 
     # Calculate total processing time
     total_time = time.time() - total_start_time
 
+    # Separate results and metrics
+    results = []
+    metrics_list = []
+    total_tokens = 0
+
+    for result, metrics in results_with_metrics:
+        if result is not None:
+            results.append(result)
+            metrics_list.append(metrics)
+            total_tokens += metrics["tokens"]["total"]
+
     # Calculate and print summary statistics
     print("\nSummary Statistics:")
-    print(f"Total abstracts processed: {len(metrics_list)}")
+    print(f"Total abstracts processed: {len(results)}")
     print(f"Total tokens used: {total_tokens}")
     print(f"Total processing time: {total_time:.2f} seconds")
-    print(f"Average tokens per request: {total_tokens / len(metrics_list) if metrics_list else 0:.2f}")
-    print(f"Average time per request: {total_time / len(metrics_list) if metrics_list else 0:.2f} seconds")
+    print(f"Average tokens per request: {total_tokens / len(results) if results else 0:.2f}")
+    print(f"Average time per request: {total_time / len(results) if results else 0:.2f} seconds")
+
+    # Save results
+    print(f"\nSaving results to {args.output}")
+    with open(args.output, 'w') as f:
+        json.dump(results, f, indent=2)
     print("Processing complete!")
 
 
