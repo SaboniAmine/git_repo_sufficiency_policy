@@ -165,33 +165,35 @@ def prompt_without_correlation(text: str) -> str:
     **Do not use acronyms if the developed formulation is in the abstract.**
 
     EXAMPLE JSON OUTPUT: 
+    
 
     {{ 
-        "transit infrastructure investment": {{ 
-            "FACTOR": {{ 
-                "social exclusion": {{ 
-                    "CORRELATION": "decreasing", 
+        "GEOGRAPHIC": "new towns",
+        "ITEMs": [  
+            "transit infrastructure investment": {{ 
+                "FACTOR": {{ 
+                    "social exclusion": {{ 
+                        "CORRELATION": "decreasing", 
+                    }}, 
+                    "CO2 emissions": {{ 
+                        "CORRELATION": "decreasing", 
+                    }} 
                 }}, 
-                "CO2 emissions": {{ 
-                    "CORRELATION": "decreasing", 
-                }} 
+                "SECTOR": ["D"],
+                
             }}, 
-            "SECTOR": ["D"],
-            "GEOGRAPHIC": "new towns",
-        }}, 
-        "microcars": {{ 
-            "FACTOR": {{ 
-                "materials use": {{ 
-                    "CORRELATION": "decreasing", 
-                }}, 
-                "food accessibility": {{ 
-                    "CORRELATION": "increasing", 
-                }},
-            "SECTOR": ["D"],
-            "GEOGRAPHIC": "new towns",
-            }} 
-        }}, 
-        ... 
+            "microcars": {{ 
+                "FACTOR": {{ 
+                    "materials use": {{ 
+                        "CORRELATION": "decreasing", 
+                    }}, 
+                    "food accessibility": {{ 
+                        "CORRELATION": "increasing", 
+                    }},
+                "SECTOR": ["D"],
+                }} 
+            }}
+        ]
     }} 
 
     Abstract: {text} 
