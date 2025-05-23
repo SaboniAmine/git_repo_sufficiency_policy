@@ -19,7 +19,8 @@ import os
 import json
 import time
 from typing import Optional, List, Dict, Tuple
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
+import backoff
 
 import pandas as pd
 from openai import OpenAI
@@ -37,15 +38,11 @@ def init_client():
     )
 
 
+@backoff.on_exception(backoff.expo, Exception, max_tries=3)
 def extract_features_and_correlations(abstract: str, openalex_id: str, doi: str) -> Tuple[Optional[str], Dict]:
     """
-    Extract features and correlations from an abstract using Scaleway's OpenAI API.
-
-    Args:
-        text: The abstract text to analyze
-
-    Returns:
-        Tuple of (extracted data or None if processing failed, metrics dictionary)
+    Extract features and correlations from an abstract using Deepseek's API.
+    Includes retry logic with exponential backoff.
     """
     if not abstract.strip():
         return None, {"tokens": 0, "time": 0}
@@ -89,7 +86,7 @@ def extract_features_and_correlations(abstract: str, openalex_id: str, doi: str)
 
     start_time = time.time()
     try:
-        print(f"Processing abstract: {abstract}...")
+        print(f"Processing abstract: {abstract[:100]}...")  # Print only first 100 chars
         response = client.chat.completions.create(
             model="deepseek-chat",
             messages=[
@@ -119,9 +116,11 @@ def extract_features_and_correlations(abstract: str, openalex_id: str, doi: str)
 
         extracted_data = json.loads(response.choices[0].message.content.strip())
         # persisted_data = persist_policies(extracted_data, text)
-        extracted_data.update({"abstract": abstract})
-        extracted_data.update({"openalex_id": openalex_id})
-        extracted_data.update({"doi": doi})
+        extracted_data.update({
+            "abstract": abstract,
+            "openalex_id": openalex_id,
+            "doi": doi
+        })
         print(f"Extracted data: {extracted_data}")
         print(f"Metrics: {metrics}")
         return extracted_data, metrics
@@ -130,37 +129,79 @@ def extract_features_and_correlations(abstract: str, openalex_id: str, doi: str)
         end_time = time.time()
         processing_time = end_time - start_time
         print(f"Error processing abstract: {e}")
-        return None, {"tokens": 0, "time": processing_time}
+        raise  # Let backoff handle the retry
 
 
-def process_row(args):
-    """Process a single row of data with the given arguments."""
-    abstract, openalex_id, doi = args
-    return extract_features_and_correlations(abstract, openalex_id, doi)
+def process_row(row_data: Tuple, row_num: int, total_rows: int, output_file: str) -> Tuple[Optional[Dict], int]:
+    """Process a single row of data and save results."""
+    abstract, openalex_id, doi = row_data
+    total_tokens = 0
+    
+    try:
+        result, metrics = extract_features_and_correlations(abstract, openalex_id, doi)
+        if result is not None:
+            total_tokens = metrics["tokens"]["total"]
+            
+            # Save result immediately
+            with open(output_file, 'r+') as f:
+                try:
+                    existing_data = json.load(f)
+                except json.JSONDecodeError:
+                    existing_data = []
+                
+                existing_data.append(result)
+                f.seek(0)
+                json.dump(existing_data, f, indent=2)
+                f.truncate()
+            
+            print(f"Completed row {row_num}/{total_rows}")
+            return result, total_tokens
+    except Exception as e:
+        print(f"Failed to process row {row_num} after retries: {e}")
+    
+    return None, total_tokens
 
 
-def process_in_batches(df: pd.DataFrame, batch_size: int = 1) -> list:
+def process_in_parallel(df: pd.DataFrame, output_file: str) -> Tuple[List[Dict], int]:
     """
-    Process abstracts in batches using parallel processing.
-
+    Process abstracts in parallel, one row at a time.
+    
     Args:
         df: DataFrame containing abstracts
-        batch_size: Number of abstracts to process in parallel
-
+        output_file: Path to output JSON file
+        
     Returns:
-        List of extracted features for each abstract
+        Tuple of (list of processed results, total tokens used)
     """
-    results = []
-    for i in range(0, len(df), batch_size):
-        batch = df.iloc[i:i + batch_size]
-        with Pool(processes=4, initializer=init_client) as pool:
-            # Zip the arguments together and pass as a single iterable
-            batch_results = list(pool.map(
-                process_row,
-                zip(batch['abstract'], batch['openalex_id'], batch['doi'])
-            ))
-        results.extend(batch_results)
-    return results
+    # Initialize output file
+    if not os.path.exists(output_file):
+        with open(output_file, 'w') as f:
+            json.dump([], f)
+    
+    # Prepare row data
+    total_rows = len(df)
+    row_data = list(zip(df['abstract'], df['openalex_id'], df['doi']))
+    
+    # Process rows in parallel
+    num_workers = min(cpu_count(), 4)  # Use up to 4 workers
+    print(f"Processing {total_rows} rows using {num_workers} workers")
+    
+    all_results = []
+    total_tokens = 0
+    
+    with Pool(processes=num_workers, initializer=init_client) as pool:
+        # Create arguments for each row
+        row_args = [(data, i+1, total_rows, output_file) for i, data in enumerate(row_data)]
+        
+        # Process rows in parallel
+        row_results = pool.starmap(process_row, row_args)
+        
+        for result, tokens in row_results:
+            if result is not None:
+                all_results.append(result)
+                total_tokens += tokens
+    
+    return all_results, total_tokens
 
 
 def main():
@@ -179,22 +220,10 @@ def main():
     total_start_time = time.time()
 
     # Process abstracts using multiprocessing
-    print(f"Processing {len(df)} abstracts using 4 workers")
-    results_with_metrics = process_in_batches(df)
+    results, total_tokens = process_in_parallel(df, args.output)
 
     # Calculate total processing time
     total_time = time.time() - total_start_time
-
-    # Separate results and metrics
-    results = []
-    metrics_list = []
-    total_tokens = 0
-
-    for result, metrics in results_with_metrics:
-        if result is not None:
-            results.append(result)
-            metrics_list.append(metrics)
-            total_tokens += metrics["tokens"]["total"]
 
     # Calculate and print summary statistics
     print("\nSummary Statistics:")
@@ -203,11 +232,6 @@ def main():
     print(f"Total processing time: {total_time:.2f} seconds")
     print(f"Average tokens per request: {total_tokens / len(results) if results else 0:.2f}")
     print(f"Average time per request: {total_time / len(results) if results else 0:.2f} seconds")
-
-    # Save results
-    print(f"\nSaving results to {args.output}")
-    with open(args.output, 'w') as f:
-        json.dump(results, f, indent=2)
     print("Processing complete!")
 
 
